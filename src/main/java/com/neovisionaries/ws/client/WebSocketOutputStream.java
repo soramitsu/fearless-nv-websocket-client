@@ -17,6 +17,7 @@ package com.neovisionaries.ws.client;
 
 
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 
@@ -52,6 +53,25 @@ class WebSocketOutputStream extends BufferedOutputStream
 
         // Write the payload.
         writeFramePayload(frame, maskingKey);
+    }
+
+
+    static byte[] prepare(WebSocketFrame frame) throws IOException
+    {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        WebSocketOutputStream encoder = new WebSocketOutputStream(bytes);
+        encoder.write(frame);
+        encoder.flush();
+        return bytes.toByteArray();
+    }
+
+
+    void writeGuarded(byte[] bytes, GuardedWriteHandle handle) throws Exception
+    {
+        // Drain preceding ordinary bytes before the guarded final check, then bypass
+        // this buffer for the one guarded handoff. No guarded bytes survive a failed write.
+        flush();
+        handle.writeTo(out, bytes);
     }
 
 

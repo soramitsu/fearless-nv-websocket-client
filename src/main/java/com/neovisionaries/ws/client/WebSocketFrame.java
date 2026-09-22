@@ -35,6 +35,12 @@ import java.util.List;
  */
 public class WebSocketFrame
 {
+    // Only the guarded text API attaches this; ordinary frame behavior is unchanged.
+    private GuardedWriteHandle mGuardedWrite;
+
+    GuardedWriteHandle getGuardedWrite() { return mGuardedWrite; }
+    void setGuardedWrite(GuardedWriteHandle handle) { mGuardedWrite = handle; }
+
     private boolean mFin;
     private boolean mRsv1;
     private boolean mRsv2;

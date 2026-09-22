@@ -2962,6 +2962,28 @@ public class WebSocket
 
 
     /**
+     * Queue one complete text message with final output authorization. Guarded
+     * messages are not split, retried, or drained after the writer stops.
+     * Negotiated compression is rejected before compressor state is touched.
+     * Queue rejection is reported through callback; ordinary sendText is unchanged.
+     * See WebSocketWriteGuard for the synchronous, non-reentrant authorizer contract.
+     */
+    public GuardedWriteHandle sendTextGuarded(String message, WebSocketWriteGuard guard, GuardedWriteCallback callback)
+    {
+        GuardedWriteHandle handle = new GuardedWriteHandle(guard, callback);
+        WebSocketFrame frame = WebSocketFrame.createTextFrame(message);
+        frame.setGuardedWrite(handle);
+        WritingThread writer = mWritingThread;
+        if (message == null || getState() != OPEN || writer == null ||
+            (mMaxPayloadSize > 0 && frame.getPayloadLength() > mMaxPayloadSize) || !writer.queueGuardedFrame(frame))
+        {
+            handle.fail(new IllegalStateException("Guarded message cannot be queued on this connection"));
+        }
+        return handle;
+    }
+
+
+    /**
      * Send a text message to the server.
      *
      * <p>
