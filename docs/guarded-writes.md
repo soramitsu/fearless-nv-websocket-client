@@ -38,5 +38,6 @@ Run `./gradlew --dependency-verification=strict test`. Tests exercise the real
 WritingThread and output stream with queue expiry/revocation, stop during an
 authority wait, cancellation, pre-flush delay, partial write/flush failure,
 unknown outcomes, immutable frames, compression rejection, cross-thread misuse,
-and callback reentry. These are deterministic stream tests, not a claim of TLS,
-real-device or production-funded validation.
+and callback reentry. Two additional tests perform a real loopback WebSocket handshake and verify
+authorized output and revocation during preparation followed by legacy traffic.
+This is not a claim of TLS, real-device or production-funded validation.
