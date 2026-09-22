@@ -20,6 +20,10 @@ import static com.neovisionaries.ws.client.WebSocketState.CLOSED;
 import static com.neovisionaries.ws.client.WebSocketState.CLOSING;
 import java.io.IOException;
 import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import com.neovisionaries.ws.client.StateManager.CloseInitiator;
 
 
@@ -36,6 +40,8 @@ class WritingThread extends WebSocketThread
     private WebSocketFrame mCloseFrame;
     private boolean mFlushNeeded;
     private boolean mStopped;
+    private boolean mGuardedWritesStopped;
+    private final Set<GuardedWriteHandle> mGuardedWrites = new HashSet<GuardedWriteHandle>();
 
 
     public WritingThread(WebSocket websocket)
@@ -73,6 +79,7 @@ class WritingThread extends WebSocketThread
             mStopped = true;
             notifyAll();
         }
+        stopGuardedWrites(new IllegalStateException("Writer stopped"));
 
         // Notify this writing thread finished.
         notifyFinished();
@@ -109,7 +116,8 @@ class WritingThread extends WebSocketThread
             }
             catch (WebSocketException e)
             {
-                // An I/O error occurred.
+                // An I/O error must never drain queued guarded mutations.
+                stopGuardedWrites(e);
                 break;
             }
         }
@@ -136,6 +144,35 @@ class WritingThread extends WebSocketThread
             // Wake up this thread.
             notifyAll();
         }
+        stopGuardedWrites(new IllegalStateException("Writer stop requested"));
+    }
+
+
+    boolean queueGuardedFrame(WebSocketFrame frame)
+    {
+        synchronized (this)
+        {
+            int limit = mWebSocket.getFrameQueueSize();
+            if (mStopped || mStopRequested || mGuardedWritesStopped || mCloseFrame != null ||
+                !frame.getGuardedWrite().isQueued() || (limit > 0 && mFrames.size() >= limit)) return false;
+            mFrames.addLast(frame);
+            mGuardedWrites.add(frame.getGuardedWrite());
+            notifyAll();
+            return true;
+        }
+    }
+
+
+    private void stopGuardedWrites(Throwable failure)
+    {
+        List<GuardedWriteHandle> pending = new ArrayList<GuardedWriteHandle>();
+        synchronized (this)
+        {
+            mGuardedWritesStopped = true;
+            pending.addAll(mGuardedWrites);
+            mGuardedWrites.clear();
+        }
+        for (GuardedWriteHandle handle : pending) handle.fail(failure);
     }
 
 
@@ -445,6 +482,12 @@ class WritingThread extends WebSocketThread
 
     private void sendFrame(WebSocketFrame frame) throws WebSocketException
     {
+        if (frame.getGuardedWrite() != null)
+        {
+            try { sendGuardedFrame(frame); }
+            finally { synchronized (this) { mGuardedWrites.remove(frame.getGuardedWrite()); } }
+            return;
+        }
         // Compress the frame if appropriate.
         frame = WebSocketFrame.compressFrame(frame, mPMCE);
 
@@ -501,6 +544,41 @@ class WritingThread extends WebSocketThread
         }
 
         // Notify the listeners that the frame was sent.
+        mWebSocket.getListenerManager().callOnFrameSent(frame);
+    }
+
+
+    private void sendGuardedFrame(WebSocketFrame frame) throws WebSocketException
+    {
+        GuardedWriteHandle handle = frame.getGuardedWrite();
+        if (!handle.isQueued()) return;
+        try
+        {
+            if (mCloseFrame != null) throw new IllegalStateException("Connection is closing");
+            // Guarded writes qualify only uncompressed messages. Do not advance any
+            // negotiated compressor state for a message that may never reach its peer.
+            if (mPMCE != null) throw new IllegalStateException("Guarded writes require compression to be disabled");
+            // Freeze the masked frame before callbacks and before waiting on authority.
+            // A callback may inspect/mutate its frame without changing these bytes.
+            byte[] encoded = WebSocketOutputStream.prepare(frame);
+            mWebSocket.getListenerManager().callOnSendingFrame(frame);
+            mWebSocket.getOutput().writeGuarded(encoded, handle);
+        }
+        catch (Exception failure)
+        {
+            // Authorization has returned/unwound before any application callback.
+            handle.fail(failure);
+            mWebSocket.getListenerManager().callOnFrameUnsent(frame);
+            if (failure instanceof IOException)
+            {
+                WebSocketException cause = new WebSocketException(WebSocketError.IO_ERROR_IN_WRITING,
+                    "An I/O error occurred in a guarded write", failure);
+                mWebSocket.getListenerManager().callOnError(cause);
+                mWebSocket.getListenerManager().callOnSendError(cause, frame);
+                throw cause;
+            }
+            return;
+        }
         mWebSocket.getListenerManager().callOnFrameSent(frame);
     }
 

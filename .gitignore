@@ -1,2 +1,6 @@
 .settings/
 target/
+
+# Source-fork Gradle validation
+.gradle/
+build/
